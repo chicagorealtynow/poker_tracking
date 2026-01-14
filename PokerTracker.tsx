@@ -393,47 +393,7 @@ const PokerTracker = () => {
               <h1 className="text-xl font-bold">Poker Tracker</h1>
               <p className="text-green-200 text-sm">{currentUser}</p>
             </div>
-            <div className="flex gap-2 relative">
-              <button 
-                onClick={() => setShowUserDropdown(!showUserDropdown)}
-                className="p-2 rounded-lg transition opacity-0 cursor-default"
-              >
-                <Settings size={20} />
-              </button>
-              
-              {/* Hidden User Dropdown */}
-              {showUserDropdown && (
-                <div className="absolute top-12 right-12 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl min-w-[200px] z-50">
-                  <div className="p-2">
-                    <div className="text-xs text-gray-400 px-2 py-1 font-semibold">All Users</div>
-                    {Object.entries(users).map(([username, userData]) => (
-                      <button
-                        key={username}
-                        onClick={() => {
-                          setShowUserDropdown(false);
-                          setShowAllUsers(true);
-                        }}
-                        className="w-full text-left px-3 py-2 hover:bg-gray-800 rounded text-sm text-white transition"
-                      >
-                        {username}
-                        <span className="text-gray-400 text-xs ml-2">({userData.sessions.length})</span>
-                      </button>
-                    ))}
-                    <div className="border-t border-gray-700 mt-1 pt-1">
-                      <button
-                        onClick={() => {
-                          setShowUserDropdown(false);
-                          setShowAllUsers(true);
-                        }}
-                        className="w-full text-left px-3 py-2 hover:bg-green-800 rounded text-sm text-green-400 font-semibold transition"
-                      >
-                        View All Sessions →
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-              
+            <div className="flex gap-2">
               <button 
                 onClick={exportData}
                 className="p-2 hover:bg-green-800 rounded-lg transition"
@@ -566,6 +526,49 @@ const PokerTracker = () => {
         <div className="fixed bottom-4 right-4 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 shadow-lg">
           <div className="text-xs text-gray-400">Total Uses</div>
           <div className="text-lg font-bold text-green-400">{usageStats?.globalUsageCount}</div>
+        </div>
+
+        {/* Hidden Admin Button - Bottom Left */}
+        <div className="fixed bottom-4 left-4 relative">
+          <button
+            onClick={() => setShowUserDropdown(!showUserDropdown)}
+            className="w-12 h-12 bg-gray-900 border border-gray-800 rounded-lg shadow-lg hover:bg-gray-800 transition flex items-center justify-center"
+          >
+            <Settings size={20} className="text-gray-400" />
+          </button>
+
+          {/* Hidden User Dropdown */}
+          {showUserDropdown && (
+            <div className="absolute bottom-14 left-0 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl min-w-[200px] z-50">
+              <div className="p-2">
+                <div className="text-xs text-gray-400 px-2 py-1 font-semibold">All Users</div>
+                {Object.entries(users).map(([username, userData]) => (
+                  <button
+                    key={username}
+                    onClick={() => {
+                      setShowUserDropdown(false);
+                      setShowAllUsers(true);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-gray-800 rounded text-sm text-white transition"
+                  >
+                    {username}
+                    <span className="text-gray-400 text-xs ml-2">({userData.sessions.length})</span>
+                  </button>
+                ))}
+                <div className="border-t border-gray-700 mt-1 pt-1">
+                  <button
+                    onClick={() => {
+                      setShowUserDropdown(false);
+                      setShowAllUsers(true);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-green-800 rounded text-sm text-green-400 font-semibold transition"
+                  >
+                    View All Sessions →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* All Users Modal - Ctrl+Alt+U */}
