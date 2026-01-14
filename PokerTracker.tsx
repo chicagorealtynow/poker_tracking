@@ -55,10 +55,10 @@ const PokerTracker = () => {
     }
   }, []);
 
-  // Keyboard shortcut: Ctrl+Alt+U to show all users
+  // Keyboard shortcut: Alt+Shift+U to show all users
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.ctrlKey && e.altKey && e.key === 'u') {
+      if (e.altKey && e.shiftKey && e.key === 'U') {
         e.preventDefault();
         setShowAllUsers(prev => !prev);
       }
@@ -523,7 +523,7 @@ const PokerTracker = () => {
               <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 flex justify-between items-center">
                 <div>
                   <h2 className="text-xl font-bold text-white">All Users & Sessions</h2>
-                  <p className="text-green-200 text-sm">{Object.keys(users).length} users • {getAllUserSessions().length} total sessions</p>
+                  <p className="text-green-200 text-sm">{Object.keys(users).length} users • {getAllUserSessions().length} total sessions • Press Alt+Shift+U to close</p>
                 </div>
                 <button 
                   onClick={() => setShowAllUsers(false)}
