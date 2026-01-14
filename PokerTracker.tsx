@@ -378,12 +378,22 @@ const PokerTracker = () => {
               <h1 className="text-xl font-bold">Poker Tracker</h1>
               <p className="text-green-200 text-sm">{currentUser}</p>
             </div>
-            <button 
-              onClick={exportData}
-              className="p-2 hover:bg-green-800 rounded-lg transition"
-            >
-              <Download size={20} />
-            </button>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setShowAllUsers(true)}
+                className="p-2 hover:bg-green-800 rounded-lg transition opacity-0 cursor-default"
+                title="View all users"
+              >
+                <Settings size={20} />
+              </button>
+              <button 
+                onClick={exportData}
+                className="p-2 hover:bg-green-800 rounded-lg transition"
+                title="Export data"
+              >
+                <Download size={20} />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -523,7 +533,7 @@ const PokerTracker = () => {
               <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 flex justify-between items-center">
                 <div>
                   <h2 className="text-xl font-bold text-white">All Users & Sessions</h2>
-                  <p className="text-green-200 text-sm">{Object.keys(users).length} users • {getAllUserSessions().length} total sessions • Press Alt+Shift+U to close</p>
+                  <p className="text-green-200 text-sm">{Object.keys(users).length} users • {getAllUserSessions().length} total sessions</p>
                 </div>
                 <button 
                   onClick={() => setShowAllUsers(false)}
