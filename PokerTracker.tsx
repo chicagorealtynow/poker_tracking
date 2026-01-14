@@ -23,6 +23,7 @@ const PokerTracker = () => {
   const [notes, setNotes] = useState('');
   const [receiptPhoto, setReceiptPhoto] = useState(null);
   const [showAllUsers, setShowAllUsers] = useState(false);
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
 
   const fileInputRef = useRef(null);
 
@@ -62,11 +63,25 @@ const PokerTracker = () => {
         e.preventDefault();
         setShowAllUsers(prev => !prev);
       }
+      // Close dropdown on Escape
+      if (e.key === 'Escape') {
+        setShowUserDropdown(false);
+      }
+    };
+
+    const handleClickOutside = (e) => {
+      if (showUserDropdown && !e.target.closest('.relative')) {
+        setShowUserDropdown(false);
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, [showUserDropdown]);
 
   // Save data to localStorage
   useEffect(() => {
@@ -378,14 +393,47 @@ const PokerTracker = () => {
               <h1 className="text-xl font-bold">Poker Tracker</h1>
               <p className="text-green-200 text-sm">{currentUser}</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 relative">
               <button 
-                onClick={() => setShowAllUsers(true)}
-                className="p-2 hover:bg-green-800 rounded-lg transition opacity-0 cursor-default"
-                title="View all users"
+                onClick={() => setShowUserDropdown(!showUserDropdown)}
+                className="p-2 rounded-lg transition opacity-0 cursor-default"
               >
                 <Settings size={20} />
               </button>
+              
+              {/* Hidden User Dropdown */}
+              {showUserDropdown && (
+                <div className="absolute top-12 right-12 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl min-w-[200px] z-50">
+                  <div className="p-2">
+                    <div className="text-xs text-gray-400 px-2 py-1 font-semibold">All Users</div>
+                    {Object.entries(users).map(([username, userData]) => (
+                      <button
+                        key={username}
+                        onClick={() => {
+                          setShowUserDropdown(false);
+                          setShowAllUsers(true);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-gray-800 rounded text-sm text-white transition"
+                      >
+                        {username}
+                        <span className="text-gray-400 text-xs ml-2">({userData.sessions.length})</span>
+                      </button>
+                    ))}
+                    <div className="border-t border-gray-700 mt-1 pt-1">
+                      <button
+                        onClick={() => {
+                          setShowUserDropdown(false);
+                          setShowAllUsers(true);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-green-800 rounded text-sm text-green-400 font-semibold transition"
+                      >
+                        View All Sessions →
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
               <button 
                 onClick={exportData}
                 className="p-2 hover:bg-green-800 rounded-lg transition"
