@@ -44,6 +44,13 @@ const PokerTracker = () => {
     
     if (storedCurrentUser) {
       setCurrentUser(storedCurrentUser);
+      
+      // Track global app usage count (all users combined)
+      const globalUsageCount = parseInt(localStorage.getItem('pokerTracker_globalUsageCount') || '0');
+      localStorage.setItem('pokerTracker_globalUsageCount', (globalUsageCount + 1).toString());
+      
+      // Track last usage timestamp
+      localStorage.setItem('pokerTracker_lastUsage', new Date().toISOString());
     }
   }, []);
 
@@ -262,13 +269,29 @@ const PokerTracker = () => {
   };
 
   const exportData = () => {
-    const data = JSON.stringify(users[currentUser], null, 2);
+    const globalUsageCount = localStorage.getItem('pokerTracker_globalUsageCount') || '0';
+    
+    const exportPayload = {
+      ...users[currentUser],
+      appStats: {
+        totalAppUsage: parseInt(globalUsageCount),
+        exportDate: new Date().toISOString()
+      }
+    };
+    
+    const data = JSON.stringify(exportPayload, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `poker-tracker-${currentUser}-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
+  };
+
+  const getGlobalUsageStats = () => {
+    const globalUsageCount = parseInt(localStorage.getItem('pokerTracker_globalUsageCount') || '0');
+    const totalUsers = Object.keys(users).length;
+    return { globalUsageCount, totalUsers };
   };
 
   // Username entry screen
@@ -315,6 +338,7 @@ const PokerTracker = () => {
 
   const metrics = getMetrics(30);
   const chartData = getChartData();
+  const usageStats = getGlobalUsageStats();
 
   // Dashboard view
   if (view === 'dashboard') {
@@ -452,6 +476,12 @@ const PokerTracker = () => {
             <p className="text-sm">Tap "Log New Session" to get started</p>
           </div>
         )}
+
+        {/* Global Usage Counter - Bottom Right */}
+        <div className="fixed bottom-4 right-4 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 shadow-lg">
+          <div className="text-xs text-gray-400">Total Uses</div>
+          <div className="text-lg font-bold text-green-400">{usageStats?.globalUsageCount}</div>
+        </div>
       </div>
     );
   }
