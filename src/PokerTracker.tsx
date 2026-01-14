@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Plus, TrendingUp, Clock, DollarSign, BarChart3, ArrowLeft, Settings, Download } from 'lucide-react';
+import { Plus, TrendingUp, Clock, DollarSign, BarChart3, ArrowLeft, Settings, Download, Camera, X } from 'lucide-react';
 
 const PokerTracker = () => {
   const [currentUser, setCurrentUser] = useState(null);
@@ -21,6 +21,9 @@ const PokerTracker = () => {
   const [mentalGame, setMentalGame] = useState('');
   const [tags, setTags] = useState([]);
   const [notes, setNotes] = useState('');
+  const [receiptPhoto, setReceiptPhoto] = useState(null);
+
+  const fileInputRef = useRef(null);
 
   // Tournament fields
   const [buyinAmount, setBuyinAmount] = useState('');
@@ -112,6 +115,7 @@ const PokerTracker = () => {
       finish_position: gameType === 'tournament' ? parseInt(finishPosition || 0) : null,
       field_size: gameType === 'tournament' ? parseInt(fieldSize || 0) : null,
       prize: gameType === 'tournament' ? parseFloat(prize || 0) : null,
+      receipt_photo: gameType === 'tournament' ? receiptPhoto : null,
       duration_minutes: durationMinutes,
       net_profit: netProfit,
       hourly_rate: hourlyRate,
@@ -158,6 +162,7 @@ const PokerTracker = () => {
     setMentalGame('');
     setTags([]);
     setNotes('');
+    setReceiptPhoto(null);
     setEditingSession(null);
   };
 
@@ -181,6 +186,7 @@ const PokerTracker = () => {
     setMentalGame(session.mental_game || '');
     setTags(session.tags || []);
     setNotes(session.notes || '');
+    setReceiptPhoto(session.receipt_photo || null);
     setView('entry');
   };
 
@@ -195,6 +201,24 @@ const PokerTracker = () => {
     setTags(prev => 
       prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
     );
+  };
+
+  const handlePhotoCapture = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setReceiptPhoto(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removePhoto = () => {
+    setReceiptPhoto(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const getMetrics = (days = 30) => {
@@ -633,6 +657,45 @@ const PokerTracker = () => {
                   placeholder="0"
                   className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
                 />
+              </div>
+
+              {/* Receipt Photo */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-300 mb-2">Receipt Photo (Optional)</label>
+                {!receiptPhoto ? (
+                  <div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handlePhotoCapture}
+                      className="hidden"
+                      id="receipt-upload"
+                    />
+                    <label
+                      htmlFor="receipt-upload"
+                      className="flex items-center justify-center gap-2 w-full py-4 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border-2 border-dashed border-gray-700 cursor-pointer transition"
+                    >
+                      <Camera size={20} />
+                      Take Photo of Receipt
+                    </label>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <img 
+                      src={receiptPhoto} 
+                      alt="Receipt preview" 
+                      className="w-full rounded-lg border border-gray-800"
+                    />
+                    <button
+                      onClick={removePhoto}
+                      className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white p-2 rounded-full shadow-lg transition"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                )}
               </div>
             </>
           )}
