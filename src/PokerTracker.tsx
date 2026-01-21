@@ -1,14 +1,44 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { Plus, TrendingUp, Clock, DollarSign, BarChart3, ArrowLeft, Settings, Download, Camera, X, Image as ImageIcon, Trash2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Plus, ArrowLeft, Trash2, X } from 'lucide-react';
+
+// HELPER: Compresses images to prevent LocalStorage "QuotaExceededError"
+const compressImage = (base64Str, maxWidth = 800, maxHeight = 800) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      // Convert to JPEG at 0.7 quality to save ~90% space
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+  });
+};
 
 const PokerTracker = () => {
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState({});
   const [view, setView] = useState('dashboard');
   const [editingSession, setEditingSession] = useState(null);
-
-  // Graph Visibility Toggle state
   const [visibleLines, setVisibleLines] = useState(['Combined', 'Cash', 'Tournament']);
 
   // Form state
@@ -34,7 +64,7 @@ const PokerTracker = () => {
   const [fieldSize, setFieldSize] = useState('');
   const [prize, setPrize] = useState('');
 
-  // Load data from localStorage
+  // Load data
   useEffect(() => {
     const storedCurrentUser = localStorage.getItem('pokerTracker_currentUser');
     const storedUsers = localStorage.getItem('pokerTracker_users');
@@ -42,10 +72,20 @@ const PokerTracker = () => {
     if (storedCurrentUser) setCurrentUser(storedCurrentUser);
   }, []);
 
-  // Save data to localStorage
+  // Save data with Error Catching
   useEffect(() => {
-    if (Object.keys(users).length > 0) localStorage.setItem('pokerTracker_users', JSON.stringify(users));
-    if (currentUser) localStorage.setItem('pokerTracker_currentUser', currentUser);
+    try {
+      if (Object.keys(users).length > 0) {
+        localStorage.setItem('pokerTracker_users', JSON.stringify(users));
+      }
+      if (currentUser) {
+        localStorage.setItem('pokerTracker_currentUser', currentUser);
+      }
+    } catch (e) {
+      if (e.name === 'QuotaExceededError' || e.code === 22) {
+        alert("Browser storage is full. Please delete some old sessions or remove images.");
+      }
+    }
   }, [users, currentUser]);
 
   const createUser = (username) => {
@@ -74,8 +114,10 @@ const PokerTracker = () => {
     const file = e.target.files[0];
     if (file && sessionImages.length < 3) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setSessionImages(prev => [...prev, reader.result]);
+      reader.onloadend = async () => {
+        // APPLY COMPRESSION HERE
+        const compressed = await compressImage(reader.result);
+        setSessionImages(prev => [...prev, compressed]);
       };
       reader.readAsDataURL(file);
     }
@@ -110,7 +152,8 @@ const PokerTracker = () => {
     if (gameType === 'cash') {
       netProfit = parseFloat(cashOut || 0) - parseFloat(buyIn || 0);
     } else {
-      const totalInvested = parseFloat(buyinAmount || 0) + parseFloat(buyinFee || 0) + (parseInt(reentries || 0) * (parseFloat(buyinAmount || 0) + parseFloat(buyinFee || 0)));
+      const perEntry = parseFloat(buyinAmount || 0) + parseFloat(buyinFee || 0);
+      const totalInvested = perEntry + (parseInt(reentries || 0) * perEntry);
       netProfit = parseFloat(prize || 0) - totalInvested;
     }
 
@@ -204,34 +247,26 @@ const PokerTracker = () => {
   };
 
   const getMetrics = (days = 30) => {
-    if (!currentUser || !users[currentUser]) return null;
+    if (!currentUser || !users[currentUser]) return { totalProfit: 0, totalHours: 0, sessionCount: 0 };
     const sessions = users[currentUser].sessions;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
     const filtered = sessions.filter(s => new Date(s.date) >= cutoffDate);
     const totalProfit = filtered.reduce((sum, s) => sum + (s.net_profit || 0), 0);
     const totalMinutes = filtered.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
-    const totalHours = totalMinutes / 60;
-    return { totalProfit, totalHours: totalHours.toFixed(1), sessionCount: filtered.length };
+    return { totalProfit, totalHours: (totalMinutes / 60).toFixed(1), sessionCount: filtered.length };
   };
 
   const getChartData = () => {
     if (!currentUser || !users[currentUser]) return [];
     const sessions = [...users[currentUser].sessions].sort((a, b) => new Date(a.date) - new Date(b.date));
-    
-    let cumulativeTotal = 0;
-    let cumulativeCash = 0;
-    let cumulativeTourney = 0;
+    let cumulativeTotal = 0, cumulativeCash = 0, cumulativeTourney = 0;
 
     return sessions.map(s => { 
       const profit = (s.net_profit || 0);
       cumulativeTotal += profit;
-      
-      if (s.game_type === 'cash') {
-        cumulativeCash += profit;
-      } else {
-        cumulativeTourney += profit;
-      }
+      if (s.game_type === 'cash') cumulativeCash += profit;
+      else cumulativeTourney += profit;
 
       return { 
         date: s.date, 
@@ -240,11 +275,6 @@ const PokerTracker = () => {
         Tournament: cumulativeTourney
       }; 
     });
-  };
-
-  const handleGameTypeChange = (type) => {
-    setGameType(type);
-    if (!editingSession) setSessionImages([]);
   };
 
   if (!currentUser) {
@@ -260,8 +290,6 @@ const PokerTracker = () => {
   }
 
   const userData = users[currentUser];
-  if (view === 'dashboard' && !userData) return <div className="min-h-screen bg-gray-950 text-white p-8">Loading dashboard...</div>;
-
   const metrics = getMetrics(30);
   const chartData = getChartData();
 
@@ -277,55 +305,22 @@ const PokerTracker = () => {
         </div>
 
         <div className="px-4 pb-4 grid grid-cols-2 gap-3">
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800"><div className="text-gray-400 text-xs">Profit</div><div className={`text-2xl font-bold ${metrics?.totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${metrics?.totalProfit.toFixed(0)}</div></div>
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800"><div className="text-gray-400 text-xs">Hours</div><div className="text-2xl font-bold text-blue-400">{metrics?.totalHours}h</div></div>
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800"><div className="text-gray-400 text-xs">30d Profit</div><div className={`text-2xl font-bold ${metrics.totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${metrics.totalProfit.toFixed(0)}</div></div>
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800"><div className="text-gray-400 text-xs">30d Hours</div><div className="text-2xl font-bold text-blue-400">{metrics.totalHours}h</div></div>
         </div>
 
         {chartData.length > 0 && (
           <div className="px-4 pb-4">
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="text-gray-400 text-sm font-semibold">Profit Performance</h2>
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => toggleLine('Combined')} 
-                  className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Combined') ? 'bg-green-600 border-green-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}
-                >Combined</button>
-                <button 
-                  onClick={() => toggleLine('Cash')} 
-                  className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Cash') ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}
-                >Cash</button>
-                <button 
-                  onClick={() => toggleLine('Tournament')} 
-                  className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Tournament') ? 'bg-orange-600 border-orange-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}
-                >Tourney</button>
-              </div>
-            </div>
-            
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800" style={{ height: '320px' }}>
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800" style={{ height: '300px' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 5, right: 20, left: -20, bottom: 20 }}>
+                <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-                  <XAxis 
-                    dataKey="date" 
-                    stroke="#9CA3AF"
-                    tick={{ fontSize: 10 }}
-                    dy={10}
-                    tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  />
+                  <XAxis dataKey="date" hide />
                   <YAxis stroke="#9CA3AF" tick={{ fontSize: 10 }} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} 
-                    itemStyle={{ fontSize: '12px' }}
-                  />
-                  {visibleLines.includes('Combined') && (
-                    <Line type="monotone" name="Combined" dataKey="Combined" stroke="#10B981" strokeWidth={3} dot={false} />
-                  )}
-                  {visibleLines.includes('Cash') && (
-                    <Line type="monotone" name="Cash" dataKey="Cash" stroke="#3B82F6" strokeWidth={2} dot={false} strokeDasharray="5 5" />
-                  )}
-                  {visibleLines.includes('Tournament') && (
-                    <Line type="monotone" name="Tournament" dataKey="Tournament" stroke="#F59E0B" strokeWidth={2} dot={false} strokeDasharray="5 5" />
-                  )}
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151' }} />
+                  {visibleLines.includes('Combined') && <Line type="monotone" dataKey="Combined" stroke="#10B981" strokeWidth={3} dot={false} />}
+                  {visibleLines.includes('Cash') && <Line type="monotone" dataKey="Cash" stroke="#3B82F6" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
+                  {visibleLines.includes('Tournament') && <Line type="monotone" dataKey="Tournament" stroke="#F59E0B" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -335,17 +330,16 @@ const PokerTracker = () => {
         <div className="px-4">
           <h2 className="text-gray-400 text-sm font-semibold mb-3">Recent Sessions</h2>
           <div className="space-y-2">
-            {userData.sessions.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 10).map((session) => (
+            {userData?.sessions.sort((a, b) => new Date(b.date) - new Date(a.date)).map((session) => (
               <div key={session.id} onClick={() => editSession(session)} className="bg-gray-900 rounded-xl p-4 border border-gray-800 cursor-pointer relative">
                 <div className="flex justify-between items-start">
                   <div>
                     <div className="text-xs text-gray-500">{new Date(session.date).toLocaleDateString()}</div>
-                    <div className="font-semibold">{session.stakes} {session.game_type === 'tournament' ? 'MTT' : 'Cash'}</div>
-                    <div className="text-sm text-gray-400">{session.location}</div>
+                    <div className="font-semibold">{session.game_type === 'tournament' ? 'MTT' : 'Cash'} - {session.stakes}</div>
                   </div>
-                  <div className="flex flex-col items-end gap-2">
-                    <div className={`text-xl font-bold ${session.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${session.net_profit.toFixed(0)}</div>
-                    <button onClick={(e) => deleteSession(session.id, e)} className="p-2 text-gray-500 hover:text-red-500 transition"><Trash2 size={18} /></button>
+                  <div className="flex flex-col items-end">
+                    <div className={`text-lg font-bold ${session.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${session.net_profit.toFixed(0)}</div>
+                    <button onClick={(e) => deleteSession(session.id, e)} className="p-1 text-gray-600"><Trash2 size={16} /></button>
                   </div>
                 </div>
               </div>
@@ -359,71 +353,58 @@ const PokerTracker = () => {
   if (view === 'entry') {
     return (
       <div className="min-h-screen bg-gray-950 text-white pb-8">
-        <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 sticky top-0 z-10 shadow-lg flex items-center gap-3">
-          <button onClick={() => { resetForm(); setView('dashboard'); }} className="p-2"><ArrowLeft size={20} /></button>
-          <h1 className="text-xl font-bold">{editingSession ? 'Edit Session' : 'Log Session'}</h1>
+        <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 sticky top-0 z-10 flex items-center gap-3">
+          <button onClick={() => { resetForm(); setView('dashboard'); }}><ArrowLeft size={24} /></button>
+          <h1 className="text-xl font-bold">{editingSession ? 'Edit' : 'New'} Session</h1>
         </div>
 
         <div className="p-4 space-y-4">
           <div className="grid grid-cols-2 gap-2">
-            <button onClick={() => handleGameTypeChange('cash')} className={`py-3 rounded-lg font-semibold ${gameType === 'cash' ? 'bg-green-600' : 'bg-gray-800 text-gray-400'}`}>Cash Game</button>
-            <button onClick={() => handleGameTypeChange('tournament')} className={`py-3 rounded-lg font-semibold ${gameType === 'tournament' ? 'bg-green-600' : 'bg-gray-800 text-gray-400'}`}>Tournament</button>
+            <button onClick={() => setGameType('cash')} className={`py-3 rounded-lg font-semibold ${gameType === 'cash' ? 'bg-green-600' : 'bg-gray-800'}`}>Cash</button>
+            <button onClick={() => setGameType('tournament')} className={`py-3 rounded-lg font-semibold ${gameType === 'tournament' ? 'bg-green-600' : 'bg-gray-800'}`}>MTT</button>
           </div>
 
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
-          
-          <div className="grid grid-cols-2 gap-3">
-            <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
-            <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
-          </div>
-
-          <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
-          
-          <input 
-            type="text" 
-            value={stakes} 
-            onChange={(e) => setStakes(e.target.value)} 
-            placeholder={gameType === 'tournament' ? "Tournament Name" : "Stakes (e.g. 1/2)"} 
-            className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" 
-          />
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+          <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+          <input type="text" value={stakes} onChange={(e) => setStakes(e.target.value)} placeholder={gameType === 'cash' ? "Stakes (1/2)" : "Tournament Name"} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
 
           {gameType === 'cash' ? (
             <div className="grid grid-cols-2 gap-3">
-              <input type="number" value={buyIn} onChange={(e) => setBuyIn(e.target.value)} placeholder="Buy-in $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
-              <input type="number" value={cashOut} onChange={(e) => setCashOut(e.target.value)} placeholder="Cash-out $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+              <input type="number" value={buyIn} onChange={(e) => setBuyIn(e.target.value)} placeholder="Buy-in $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+              <input type="number" value={cashOut} onChange={(e) => setCashOut(e.target.value)} placeholder="Cash-out $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
             </div>
           ) : (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
-                <input type="number" value={buyinAmount} onChange={(e) => setBuyinAmount(e.target.value)} placeholder="Buy-in $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
-                <input type="number" value={buyinFee} onChange={(e) => setBuyinFee(e.target.value)} placeholder="Fee $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+                <input type="number" value={buyinAmount} onChange={(e) => setBuyinAmount(e.target.value)} placeholder="Buy-in $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+                <input type="number" value={buyinFee} onChange={(e) => setBuyinFee(e.target.value)} placeholder="Fee $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
               </div>
-              <input type="number" value={prize} onChange={(e) => setPrize(e.target.value)} placeholder="Prize $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+              <input type="number" value={prize} onChange={(e) => setPrize(e.target.value)} placeholder="Prize $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
             </div>
           )}
 
-          <div className="border-t border-gray-800 pt-4">
-            <label className="block text-sm font-semibold text-gray-300 mb-2">Session Photos ({sessionImages.length}/3)</label>
+          <div className="pt-2">
+            <label className="block text-xs font-semibold text-gray-400 mb-2">Photos ({sessionImages.length}/3)</label>
             <div className="grid grid-cols-3 gap-2">
               {sessionImages.map((img, idx) => (
                 <div key={idx} className="relative aspect-square">
-                  <img src={img} alt="Capture" className="w-full h-full object-cover rounded-lg border border-gray-700" />
+                  <img src={img} alt="Session" className="w-full h-full object-cover rounded-lg" />
                   <button onClick={() => removePhoto(idx)} className="absolute -top-1 -right-1 bg-red-600 p-1 rounded-full"><X size={12} /></button>
                 </div>
               ))}
               {sessionImages.length < 3 && (
-                <label className="aspect-square flex flex-col items-center justify-center bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer">
-                  <Plus size={24} className="text-gray-400" />
+                <label className="aspect-square flex items-center justify-center bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer">
+                  <Plus size={24} className="text-gray-500" />
                   <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="hidden" />
                 </label>
               )}
             </div>
           </div>
 
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes..." rows={4} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none resize-none" />
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes..." rows={3} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 resize-none" />
 
-          <button onClick={saveSession} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl shadow-lg transition transform active:scale-95">
-            {editingSession ? 'Update Session' : 'Save Session'}
+          <button onClick={saveSession} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl shadow-lg">
+            {editingSession ? 'Update' : 'Save'} Session
           </button>
         </div>
       </div>
