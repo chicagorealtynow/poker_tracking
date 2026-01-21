@@ -28,7 +28,6 @@ const compressImage = (base64Str, maxWidth = 800, maxHeight = 800) => {
       canvas.height = height;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, width, height);
-      // Convert to JPEG at 0.7 quality to save ~90% space
       resolve(canvas.toDataURL('image/jpeg', 0.7));
     };
   });
@@ -115,7 +114,6 @@ const PokerTracker = () => {
     if (file && sessionImages.length < 3) {
       const reader = new FileReader();
       reader.onloadend = async () => {
-        // APPLY COMPRESSION HERE
         const compressed = await compressImage(reader.result);
         setSessionImages(prev => [...prev, compressed]);
       };
@@ -311,16 +309,26 @@ const PokerTracker = () => {
 
         {chartData.length > 0 && (
           <div className="px-4 pb-4">
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800" style={{ height: '300px' }}>
+            {/* RESTORED LEGEND BUTTONS */}
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-gray-400 text-sm font-semibold">Profit Performance</h2>
+              <div className="flex gap-2">
+                <button onClick={() => toggleLine('Combined')} className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Combined') ? 'bg-green-600 border-green-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}>Combined</button>
+                <button onClick={() => toggleLine('Cash')} className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Cash') ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}>Cash</button>
+                <button onClick={() => toggleLine('Tournament')} className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Tournament') ? 'bg-orange-600 border-orange-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}>Tourney</button>
+              </div>
+            </div>
+
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800" style={{ height: '320px' }}>
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
+                <LineChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
                   <XAxis dataKey="date" hide />
                   <YAxis stroke="#9CA3AF" tick={{ fontSize: 10 }} />
-                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151' }} />
-                  {visibleLines.includes('Combined') && <Line type="monotone" dataKey="Combined" stroke="#10B981" strokeWidth={3} dot={false} />}
-                  {visibleLines.includes('Cash') && <Line type="monotone" dataKey="Cash" stroke="#3B82F6" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
-                  {visibleLines.includes('Tournament') && <Line type="monotone" dataKey="Tournament" stroke="#F59E0B" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} itemStyle={{ fontSize: '12px' }} />
+                  {visibleLines.includes('Combined') && <Line type="monotone" name="Combined" dataKey="Combined" stroke="#10B981" strokeWidth={3} dot={false} />}
+                  {visibleLines.includes('Cash') && <Line type="monotone" name="Cash" dataKey="Cash" stroke="#3B82F6" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
+                  {visibleLines.includes('Tournament') && <Line type="monotone" name="Tournament" dataKey="Tournament" stroke="#F59E0B" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -330,16 +338,17 @@ const PokerTracker = () => {
         <div className="px-4">
           <h2 className="text-gray-400 text-sm font-semibold mb-3">Recent Sessions</h2>
           <div className="space-y-2">
-            {userData?.sessions.sort((a, b) => new Date(b.date) - new Date(a.date)).map((session) => (
+            {userData?.sessions.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 10).map((session) => (
               <div key={session.id} onClick={() => editSession(session)} className="bg-gray-900 rounded-xl p-4 border border-gray-800 cursor-pointer relative">
                 <div className="flex justify-between items-start">
                   <div>
                     <div className="text-xs text-gray-500">{new Date(session.date).toLocaleDateString()}</div>
                     <div className="font-semibold">{session.game_type === 'tournament' ? 'MTT' : 'Cash'} - {session.stakes}</div>
+                    <div className="text-xs text-gray-400">{session.location}</div>
                   </div>
                   <div className="flex flex-col items-end">
                     <div className={`text-lg font-bold ${session.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${session.net_profit.toFixed(0)}</div>
-                    <button onClick={(e) => deleteSession(session.id, e)} className="p-1 text-gray-600"><Trash2 size={16} /></button>
+                    <button onClick={(e) => deleteSession(session.id, e)} className="p-1 text-gray-600 hover:text-red-500 transition"><Trash2 size={16} /></button>
                   </div>
                 </div>
               </div>
@@ -360,40 +369,40 @@ const PokerTracker = () => {
 
         <div className="p-4 space-y-4">
           <div className="grid grid-cols-2 gap-2">
-            <button onClick={() => setGameType('cash')} className={`py-3 rounded-lg font-semibold ${gameType === 'cash' ? 'bg-green-600' : 'bg-gray-800'}`}>Cash</button>
-            <button onClick={() => setGameType('tournament')} className={`py-3 rounded-lg font-semibold ${gameType === 'tournament' ? 'bg-green-600' : 'bg-gray-800'}`}>MTT</button>
+            <button onClick={() => setGameType('cash')} className={`py-3 rounded-lg font-semibold ${gameType === 'cash' ? 'bg-green-600' : 'bg-gray-800 text-gray-400'}`}>Cash</button>
+            <button onClick={() => setGameType('tournament')} className={`py-3 rounded-lg font-semibold ${gameType === 'tournament' ? 'bg-green-600' : 'bg-gray-800 text-gray-400'}`}>MTT</button>
           </div>
 
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
-          <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
-          <input type="text" value={stakes} onChange={(e) => setStakes(e.target.value)} placeholder={gameType === 'cash' ? "Stakes (1/2)" : "Tournament Name"} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+          <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Location" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+          <input type="text" value={stakes} onChange={(e) => setStakes(e.target.value)} placeholder={gameType === 'cash' ? "Stakes (1/2)" : "Tournament Name"} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
 
           {gameType === 'cash' ? (
             <div className="grid grid-cols-2 gap-3">
-              <input type="number" value={buyIn} onChange={(e) => setBuyIn(e.target.value)} placeholder="Buy-in $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
-              <input type="number" value={cashOut} onChange={(e) => setCashOut(e.target.value)} placeholder="Cash-out $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+              <input type="number" value={buyIn} onChange={(e) => setBuyIn(e.target.value)} placeholder="Buy-in $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+              <input type="number" value={cashOut} onChange={(e) => setCashOut(e.target.value)} placeholder="Cash-out $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
             </div>
           ) : (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
-                <input type="number" value={buyinAmount} onChange={(e) => setBuyinAmount(e.target.value)} placeholder="Buy-in $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
-                <input type="number" value={buyinFee} onChange={(e) => setBuyinFee(e.target.value)} placeholder="Fee $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+                <input type="number" value={buyinAmount} onChange={(e) => setBuyinAmount(e.target.value)} placeholder="Buy-in $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+                <input type="number" value={buyinFee} onChange={(e) => setBuyinFee(e.target.value)} placeholder="Fee $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
               </div>
-              <input type="number" value={prize} onChange={(e) => setPrize(e.target.value)} placeholder="Prize $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800" />
+              <input type="number" value={prize} onChange={(e) => setPrize(e.target.value)} placeholder="Prize $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
             </div>
           )}
 
-          <div className="pt-2">
-            <label className="block text-xs font-semibold text-gray-400 mb-2">Photos ({sessionImages.length}/3)</label>
+          <div className="pt-2 border-t border-gray-800 mt-4">
+            <label className="block text-xs font-semibold text-gray-400 mb-2 pt-2">Photos ({sessionImages.length}/3)</label>
             <div className="grid grid-cols-3 gap-2">
               {sessionImages.map((img, idx) => (
                 <div key={idx} className="relative aspect-square">
-                  <img src={img} alt="Session" className="w-full h-full object-cover rounded-lg" />
+                  <img src={img} alt="Session" className="w-full h-full object-cover rounded-lg border border-gray-700" />
                   <button onClick={() => removePhoto(idx)} className="absolute -top-1 -right-1 bg-red-600 p-1 rounded-full"><X size={12} /></button>
                 </div>
               ))}
               {sessionImages.length < 3 && (
-                <label className="aspect-square flex items-center justify-center bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer">
+                <label className="aspect-square flex flex-col items-center justify-center bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer">
                   <Plus size={24} className="text-gray-500" />
                   <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="hidden" />
                 </label>
@@ -401,9 +410,9 @@ const PokerTracker = () => {
             </div>
           </div>
 
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes..." rows={3} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 resize-none" />
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes..." rows={3} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none resize-none" />
 
-          <button onClick={saveSession} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl shadow-lg">
+          <button onClick={saveSession} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl shadow-lg transition active:scale-95">
             {editingSession ? 'Update' : 'Save'} Session
           </button>
         </div>
