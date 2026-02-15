@@ -4,7 +4,7 @@ import { Plus, ArrowLeft, Trash2, X } from 'lucide-react';
 
 // IndexedDB helper functions
 const DB_NAME = 'PokerTrackerDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const initDB = () => {
   return new Promise((resolve, reject) => {
@@ -21,6 +21,9 @@ const initDB = () => {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('images')) {
+        db.createObjectStore('images', { keyPath: 'id' });
       }
     };
   });
@@ -60,25 +63,84 @@ const getFromIndexedDB = async (storeName, key) => {
   }
 };
 
-const getAllFromIndexedDB = async (storeName) => {
+const deleteFromIndexedDB = async (storeName, key) => {
   try {
     const db = await initDB();
     return new Promise((resolve, reject) => {
-      const transaction = db.transaction([storeName], 'readonly');
+      const transaction = db.transaction([storeName], 'readwrite');
       const store = transaction.objectStore(storeName);
-      const request = store.getAll();
+      const request = store.delete(key);
       
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });
   } catch (error) {
-    console.error('IndexedDB getAll error:', error);
-    return [];
+    console.error('IndexedDB delete error:', error);
   }
 };
 
-// HELPER: Compresses images to prevent storage issues
-const compressImage = (base64Str, maxWidth = 600, maxHeight = 600, quality = 0.6) => {
+// Convert base64 to blob for efficient storage
+const base64ToBlob = (base64) => {
+  const parts = base64.split(',');
+  const contentType = parts[0].match(/:(.*?);/)[1];
+  const raw = window.atob(parts[1]);
+  const rawLength = raw.length;
+  const uInt8Array = new Uint8Array(rawLength);
+  
+  for (let i = 0; i < rawLength; ++i) {
+    uInt8Array[i] = raw.charCodeAt(i);
+  }
+  
+  return new Blob([uInt8Array], { type: contentType });
+};
+
+// Convert blob back to base64 for display
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
+// Store image as blob
+const saveImage = async (base64Data, imageId) => {
+  try {
+    const blob = base64ToBlob(base64Data);
+    await saveToIndexedDB('images', { id: imageId, blob });
+    return imageId;
+  } catch (error) {
+    console.error('Error saving image:', error);
+    throw error;
+  }
+};
+
+// Load image from blob
+const loadImage = async (imageId) => {
+  try {
+    const result = await getFromIndexedDB('images', imageId);
+    if (result && result.blob) {
+      return await blobToBase64(result.blob);
+    }
+    return null;
+  } catch (error) {
+    console.error('Error loading image:', error);
+    return null;
+  }
+};
+
+// Delete image
+const deleteImage = async (imageId) => {
+  try {
+    await deleteFromIndexedDB('images', imageId);
+  } catch (error) {
+    console.error('Error deleting image:', error);
+  }
+};
+
+// HELPER: Compresses images aggressively
+const compressImage = (base64Str, maxWidth = 400, maxHeight = 400, quality = 0.5) => {
   return new Promise((resolve) => {
     const img = new Image();
     img.src = base64Str;
@@ -116,6 +178,9 @@ const PokerTracker = () => {
   const [visibleLines, setVisibleLines] = useState(['Combined', 'Cash', 'Tournament']);
   const [loading, setLoading] = useState(true);
 
+  // Image cache for current session
+  const [imageCache, setImageCache] = useState({});
+
   // Dropdown suggestions
   const [locationSuggestions, setLocationSuggestions] = useState([]);
   const [stakeSuggestions, setStakeSuggestions] = useState([]);
@@ -135,7 +200,7 @@ const PokerTracker = () => {
   const [mentalGame, setMentalGame] = useState('');
   const [tags, setTags] = useState([]);
   const [notes, setNotes] = useState('');
-  const [sessionImages, setSessionImages] = useState([]);
+  const [sessionImageIds, setSessionImageIds] = useState([]);
 
   // Tournament fields
   const [buyinAmount, setBuyinAmount] = useState('');
@@ -151,7 +216,6 @@ const PokerTracker = () => {
       setLoading(true);
       
       try {
-        // Load current user from IndexedDB
         const currentUserData = await getFromIndexedDB('settings', 'currentUser');
         if (currentUserData) {
           setCurrentUser(currentUserData.value);
@@ -170,6 +234,28 @@ const PokerTracker = () => {
     
     initialize();
   }, []);
+
+  // Load images for display
+  useEffect(() => {
+    const loadImages = async () => {
+      const newCache = {};
+      for (const imageId of sessionImageIds) {
+        if (!imageCache[imageId]) {
+          const base64 = await loadImage(imageId);
+          if (base64) {
+            newCache[imageId] = base64;
+          }
+        }
+      }
+      if (Object.keys(newCache).length > 0) {
+        setImageCache(prev => ({ ...prev, ...newCache }));
+      }
+    };
+    
+    if (sessionImageIds.length > 0) {
+      loadImages();
+    }
+  }, [sessionImageIds]);
 
   // Update suggestions based on existing sessions
   const updateSuggestions = (sessions) => {
@@ -209,23 +295,32 @@ const PokerTracker = () => {
 
   const handlePhotoCapture = (e) => {
     const file = e.target.files[0];
-    if (file && sessionImages.length < 3) {
+    if (file && sessionImageIds.length < 3) {
       const reader = new FileReader();
       reader.onloadend = async () => {
         try {
           const compressed = await compressImage(reader.result);
-          setSessionImages(prev => [...prev, compressed]);
+          const imageId = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          await saveImage(compressed, imageId);
+          setSessionImageIds(prev => [...prev, imageId]);
+          setImageCache(prev => ({ ...prev, [imageId]: compressed }));
         } catch (error) {
-          console.error('Error compressing image:', error);
-          alert('Error processing image. Please try a smaller image.');
+          console.error('Error processing image:', error);
+          alert('Error saving image. Storage may be full. Try removing old sessions first.');
         }
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const removePhoto = (index) => {
-    setSessionImages(prev => prev.filter((_, i) => i !== index));
+  const removePhoto = async (imageId) => {
+    await deleteImage(imageId);
+    setSessionImageIds(prev => prev.filter(id => id !== imageId));
+    setImageCache(prev => {
+      const newCache = { ...prev };
+      delete newCache[imageId];
+      return newCache;
+    });
   };
 
   const toggleLine = (line) => {
@@ -234,11 +329,18 @@ const PokerTracker = () => {
     );
   };
 
-  const deleteSession = async (id, e) => {
+  const deleteSession = async (session, e) => {
     if (e) e.stopPropagation();
     if (window.confirm('Are you sure you want to delete this session?')) {
       try {
-        const updatedSessions = userData.sessions.filter(s => s.id !== id);
+        // Delete associated images
+        if (session.imageIds && session.imageIds.length > 0) {
+          for (const imageId of session.imageIds) {
+            await deleteImage(imageId);
+          }
+        }
+        
+        const updatedSessions = userData.sessions.filter(s => s.id !== session.id);
         const updatedUser = { ...userData, sessions: updatedSessions };
         await saveToIndexedDB('users', updatedUser);
         setUserData(updatedUser);
@@ -265,6 +367,14 @@ const PokerTracker = () => {
         netProfit = parseFloat(prize || 0) - totalInvested;
       }
 
+      // If editing, delete old images that were removed
+      if (editingSession && editingSession.imageIds) {
+        const removedIds = editingSession.imageIds.filter(id => !sessionImageIds.includes(id));
+        for (const imageId of removedIds) {
+          await deleteImage(imageId);
+        }
+      }
+
       const session = {
         id: editingSession?.id || `sess_${Date.now()}`,
         game_type: gameType,
@@ -281,7 +391,7 @@ const PokerTracker = () => {
         finish_position: gameType === 'tournament' ? parseInt(finishPosition || 0) : null,
         field_size: gameType === 'tournament' ? parseInt(fieldSize || 0) : null,
         prize: gameType === 'tournament' ? parseFloat(prize || 0) : null,
-        images: sessionImages,
+        imageIds: sessionImageIds,
         duration_minutes: durationMinutes,
         net_profit: netProfit,
         table_quality: tableQuality,
@@ -303,7 +413,7 @@ const PokerTracker = () => {
       setView('dashboard');
     } catch (error) {
       console.error('Error saving session:', error);
-      alert('Error saving session. Please try removing images or simplifying notes.');
+      alert('Error saving session. Storage may be full. Try deleting old sessions or images.');
     }
   };
 
@@ -326,13 +436,14 @@ const PokerTracker = () => {
     setMentalGame('');
     setTags([]);
     setNotes('');
-    setSessionImages([]);
+    setSessionImageIds([]);
+    setImageCache({});
     setEditingSession(null);
     setShowLocationDropdown(false);
     setShowStakesDropdown(false);
   };
 
-  const editSession = (session) => {
+  const editSession = async (session) => {
     setEditingSession(session);
     setGameType(session.game_type);
     setDate(session.date);
@@ -352,7 +463,20 @@ const PokerTracker = () => {
     setMentalGame(session.mental_game || '');
     setTags(session.tags || []);
     setNotes(session.notes || '');
-    setSessionImages(session.images || []);
+    setSessionImageIds(session.imageIds || []);
+    
+    // Load images for editing
+    if (session.imageIds && session.imageIds.length > 0) {
+      const newCache = {};
+      for (const imageId of session.imageIds) {
+        const base64 = await loadImage(imageId);
+        if (base64) {
+          newCache[imageId] = base64;
+        }
+      }
+      setImageCache(newCache);
+    }
+    
     setView('entry');
   };
 
@@ -466,7 +590,7 @@ const PokerTracker = () => {
                   </div>
                   <div className="flex flex-col items-end">
                     <div className={`text-lg font-bold ${session.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${session.net_profit.toFixed(0)}</div>
-                    <button onClick={(e) => deleteSession(session.id, e)} className="p-1 text-gray-600 hover:text-red-500 transition"><Trash2 size={16} /></button>
+                    <button onClick={(e) => deleteSession(session, e)} className="p-1 text-gray-600 hover:text-red-500 transition"><Trash2 size={16} /></button>
                   </div>
                 </div>
               </div>
@@ -580,15 +704,21 @@ const PokerTracker = () => {
           )}
 
           <div className="pt-2 border-t border-gray-800 mt-4">
-            <label className="block text-xs font-semibold text-gray-400 mb-2 pt-2">Photos ({sessionImages.length}/3)</label>
+            <label className="block text-xs font-semibold text-gray-400 mb-2 pt-2">Photos ({sessionImageIds.length}/3)</label>
             <div className="grid grid-cols-3 gap-2">
-              {sessionImages.map((img, idx) => (
-                <div key={idx} className="relative aspect-square">
-                  <img src={img} alt="Session" className="w-full h-full object-cover rounded-lg border border-gray-700" />
-                  <button onClick={() => removePhoto(idx)} className="absolute -top-1 -right-1 bg-red-600 p-1 rounded-full"><X size={12} /></button>
+              {sessionImageIds.map((imageId, idx) => (
+                <div key={imageId} className="relative aspect-square">
+                  {imageCache[imageId] ? (
+                    <img src={imageCache[imageId]} alt="Session" className="w-full h-full object-cover rounded-lg border border-gray-700" />
+                  ) : (
+                    <div className="w-full h-full bg-gray-800 rounded-lg flex items-center justify-center">
+                      <div className="text-gray-600 text-xs">Loading...</div>
+                    </div>
+                  )}
+                  <button onClick={() => removePhoto(imageId)} className="absolute -top-1 -right-1 bg-red-600 p-1 rounded-full"><X size={12} /></button>
                 </div>
               ))}
-              {sessionImages.length < 3 && (
+              {sessionImageIds.length < 3 && (
                 <label className="aspect-square flex flex-col items-center justify-center bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer">
                   <Plus size={24} className="text-gray-500" />
                   <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="hidden" />
