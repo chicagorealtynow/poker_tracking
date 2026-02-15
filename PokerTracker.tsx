@@ -1,12 +1,138 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { Plus, TrendingUp, Clock, DollarSign, BarChart3, ArrowLeft, Settings, Download, Camera, X } from 'lucide-react';
+import { Plus, ArrowLeft, Trash2, X } from 'lucide-react';
+
+// IndexedDB helper functions
+const DB_NAME = 'PokerTrackerDB';
+const DB_VERSION = 1;
+
+const initDB = () => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      
+      if (!db.objectStoreNames.contains('users')) {
+        db.createObjectStore('users', { keyPath: 'username' });
+      }
+      if (!db.objectStoreNames.contains('settings')) {
+        db.createObjectStore('settings', { keyPath: 'key' });
+      }
+    };
+  });
+};
+
+const saveToIndexedDB = async (storeName, data) => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([storeName], 'readwrite');
+    const store = transaction.objectStore(storeName);
+    const request = store.put(data);
+    
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const getFromIndexedDB = async (storeName, key) => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([storeName], 'readonly');
+    const store = transaction.objectStore(storeName);
+    const request = store.get(key);
+    
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const getAllFromIndexedDB = async (storeName) => {
+  const db = await initDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([storeName], 'readonly');
+    const store = transaction.objectStore(storeName);
+    const request = store.getAll();
+    
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+// Migration function from localStorage to IndexedDB
+const migrateFromLocalStorage = async () => {
+  try {
+    const localStorageUsers = localStorage.getItem('pokerTracker_users');
+    const localStorageCurrentUser = localStorage.getItem('pokerTracker_currentUser');
+    
+    if (localStorageUsers) {
+      const users = JSON.parse(localStorageUsers);
+      for (const [username, userData] of Object.entries(users)) {
+        await saveToIndexedDB('users', { username, ...userData });
+      }
+    }
+    
+    if (localStorageCurrentUser) {
+      await saveToIndexedDB('settings', { key: 'currentUser', value: localStorageCurrentUser });
+    }
+    
+    // Mark migration as complete
+    localStorage.setItem('pokerTracker_migrated', 'true');
+    
+    return true;
+  } catch (error) {
+    console.error('Migration error:', error);
+    return false;
+  }
+};
+
+// HELPER: Compresses images to prevent storage issues
+const compressImage = (base64Str, maxWidth = 800, maxHeight = 800) => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let width = img.width;
+      let height = img.height;
+
+      if (width > height) {
+        if (width > maxWidth) {
+          height *= maxWidth / width;
+          width = maxWidth;
+        }
+      } else {
+        if (height > maxHeight) {
+          width *= maxHeight / height;
+          height = maxHeight;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
+    };
+  });
+};
 
 const PokerTracker = () => {
   const [currentUser, setCurrentUser] = useState(null);
-  const [users, setUsers] = useState({});
-  const [view, setView] = useState('dashboard'); // dashboard, entry, sessions, analytics
+  const [userData, setUserData] = useState(null);
+  const [view, setView] = useState('dashboard');
   const [editingSession, setEditingSession] = useState(null);
+  const [visibleLines, setVisibleLines] = useState(['Combined', 'Cash', 'Tournament']);
+  const [loading, setLoading] = useState(true);
+
+  // Dropdown suggestions
+  const [locationSuggestions, setLocationSuggestions] = useState([]);
+  const [stakeSuggestions, setStakeSuggestions] = useState([]);
+  const [showLocationDropdown, setShowLocationDropdown] = useState(false);
+  const [showStakesDropdown, setShowStakesDropdown] = useState(false);
 
   // Form state
   const [gameType, setGameType] = useState('cash');
@@ -21,11 +147,7 @@ const PokerTracker = () => {
   const [mentalGame, setMentalGame] = useState('');
   const [tags, setTags] = useState([]);
   const [notes, setNotes] = useState('');
-  const [receiptPhoto, setReceiptPhoto] = useState(null);
-  const [showAllUsers, setShowAllUsers] = useState(false);
-  const [showUserDropdown, setShowUserDropdown] = useState(false);
-
-  const fileInputRef = useRef(null);
+  const [sessionImages, setSessionImages] = useState([]);
 
   // Tournament fields
   const [buyinAmount, setBuyinAmount] = useState('');
@@ -35,104 +157,109 @@ const PokerTracker = () => {
   const [fieldSize, setFieldSize] = useState('');
   const [prize, setPrize] = useState('');
 
-  // Load data from localStorage
+  // Initialize and migrate data
   useEffect(() => {
-    const storedCurrentUser = localStorage.getItem('pokerTracker_currentUser');
-    const storedUsers = localStorage.getItem('pokerTracker_users');
-    
-    if (storedUsers) {
-      setUsers(JSON.parse(storedUsers));
-    }
-    
-    if (storedCurrentUser) {
-      setCurrentUser(storedCurrentUser);
+    const initialize = async () => {
+      setLoading(true);
       
-      // Track global app usage count (all users combined)
-      const globalUsageCount = parseInt(localStorage.getItem('pokerTracker_globalUsageCount') || '0');
-      localStorage.setItem('pokerTracker_globalUsageCount', (globalUsageCount + 1).toString());
+      // Check if migration is needed
+      const migrated = localStorage.getItem('pokerTracker_migrated');
+      if (!migrated) {
+        await migrateFromLocalStorage();
+      }
       
-      // Track last usage timestamp
-      localStorage.setItem('pokerTracker_lastUsage', new Date().toISOString());
-    }
+      // Load current user
+      const currentUserData = await getFromIndexedDB('settings', 'currentUser');
+      if (currentUserData) {
+        setCurrentUser(currentUserData.value);
+        const user = await getFromIndexedDB('users', currentUserData.value);
+        if (user) {
+          setUserData(user);
+          updateSuggestions(user.sessions || []);
+        }
+      }
+      
+      setLoading(false);
+    };
+    
+    initialize();
   }, []);
 
-  // Keyboard shortcut: Alt+Shift+U to show all users
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.altKey && e.shiftKey && e.key === 'U') {
-        e.preventDefault();
-        setShowAllUsers(prev => !prev);
-      }
-      // Close dropdown on Escape
-      if (e.key === 'Escape') {
-        setShowUserDropdown(false);
-      }
-    };
+  // Update suggestions based on existing sessions
+  const updateSuggestions = (sessions) => {
+    const locations = [...new Set(sessions.map(s => s.location).filter(Boolean))];
+    const stakes = [...new Set(sessions.map(s => s.stakes).filter(Boolean))];
+    setLocationSuggestions(locations);
+    setStakeSuggestions(stakes);
+  };
 
-    const handleClickOutside = (e) => {
-      if (showUserDropdown && !e.target.closest('.relative')) {
-        setShowUserDropdown(false);
-      }
+  const createUser = async (username) => {
+    const newUser = {
+      username,
+      createdAt: new Date().toISOString(),
+      sessions: [],
+      locations: [],
+      tags: ['tired', 'tilted', 'good_table', 'ran_hot', 'ran_cold', 'tough_table']
     };
-
-    window.addEventListener('keydown', handleKeyDown);
-    document.addEventListener('click', handleClickOutside);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('click', handleClickOutside);
-    };
-  }, [showUserDropdown]);
-
-  // Save data to localStorage
-  useEffect(() => {
-    if (Object.keys(users).length > 0) {
-      localStorage.setItem('pokerTracker_users', JSON.stringify(users));
-    }
-    if (currentUser) {
-      localStorage.setItem('pokerTracker_currentUser', currentUser);
-    }
-  }, [users, currentUser]);
-
-  const createUser = (username) => {
-    const newUsers = {
-      ...users,
-      [username]: {
-        createdAt: new Date().toISOString(),
-        sessions: [],
-        locations: [],
-        tags: ['tired', 'tilted', 'good_table', 'ran_hot', 'ran_cold', 'tough_table']
-      }
-    };
-    setUsers(newUsers);
+    
+    await saveToIndexedDB('users', newUser);
+    await saveToIndexedDB('settings', { key: 'currentUser', value: username });
     setCurrentUser(username);
+    setUserData(newUser);
   };
 
   const calculateDuration = (start, end) => {
     const [startH, startM] = start.split(':').map(Number);
     const [endH, endM] = end.split(':').map(Number);
     let minutes = (endH * 60 + endM) - (startH * 60 + startM);
-    if (minutes < 0) minutes += 24 * 60; // Handle overnight sessions
+    if (minutes < 0) minutes += 24 * 60;
     return minutes;
   };
 
-  const saveSession = () => {
-    if (!currentUser) return;
+  const handlePhotoCapture = (e) => {
+    const file = e.target.files[0];
+    if (file && sessionImages.length < 3) {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const compressed = await compressImage(reader.result);
+        setSessionImages(prev => [...prev, compressed]);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
+  const removePhoto = (index) => {
+    setSessionImages(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const toggleLine = (line) => {
+    setVisibleLines(prev => 
+      prev.includes(line) ? prev.filter(l => l !== line) : [...prev, line]
+    );
+  };
+
+  const deleteSession = async (id, e) => {
+    if (e) e.stopPropagation();
+    if (window.confirm('Are you sure you want to delete this session?')) {
+      const updatedSessions = userData.sessions.filter(s => s.id !== id);
+      const updatedUser = { ...userData, sessions: updatedSessions };
+      await saveToIndexedDB('users', updatedUser);
+      setUserData(updatedUser);
+      updateSuggestions(updatedSessions);
+    }
+  };
+
+  const saveSession = async () => {
+    if (!currentUser) return;
     const durationMinutes = calculateDuration(startTime, endTime);
     let netProfit = 0;
-    let hourlyRate = 0;
-    let roiPercent = null;
 
     if (gameType === 'cash') {
       netProfit = parseFloat(cashOut || 0) - parseFloat(buyIn || 0);
-      hourlyRate = durationMinutes > 0 ? (netProfit / durationMinutes) * 60 : 0;
     } else {
-      const totalInvested = 
-        parseFloat(buyinAmount || 0) + 
-        parseFloat(buyinFee || 0) + 
-        (parseInt(reentries || 0) * (parseFloat(buyinAmount || 0) + parseFloat(buyinFee || 0)));
+      const perEntry = parseFloat(buyinAmount || 0) + parseFloat(buyinFee || 0);
+      const totalInvested = perEntry + (parseInt(reentries || 0) * perEntry);
       netProfit = parseFloat(prize || 0) - totalInvested;
-      roiPercent = totalInvested > 0 ? (netProfit / totalInvested) * 100 : 0;
     }
 
     const session = {
@@ -151,30 +278,24 @@ const PokerTracker = () => {
       finish_position: gameType === 'tournament' ? parseInt(finishPosition || 0) : null,
       field_size: gameType === 'tournament' ? parseInt(fieldSize || 0) : null,
       prize: gameType === 'tournament' ? parseFloat(prize || 0) : null,
-      receipt_photo: gameType === 'tournament' ? receiptPhoto : null,
+      images: sessionImages,
       duration_minutes: durationMinutes,
       net_profit: netProfit,
-      hourly_rate: hourlyRate,
-      roi_percent: roiPercent,
       table_quality: tableQuality,
       mental_game: mentalGame,
       tags,
       notes
     };
 
-    const updatedUsers = { ...users };
-    const userSessions = editingSession
-      ? updatedUsers[currentUser].sessions.map(s => s.id === session.id ? session : s)
-      : [...updatedUsers[currentUser].sessions, session];
+    const updatedSessions = editingSession
+      ? userData.sessions.map(s => s.id === session.id ? session : s)
+      : [...userData.sessions, session];
     
-    updatedUsers[currentUser].sessions = userSessions;
+    const updatedUser = { ...userData, sessions: updatedSessions };
+    await saveToIndexedDB('users', updatedUser);
+    setUserData(updatedUser);
+    updateSuggestions(updatedSessions);
 
-    // Add location if new
-    if (location && !updatedUsers[currentUser].locations.includes(location)) {
-      updatedUsers[currentUser].locations.push(location);
-    }
-
-    setUsers(updatedUsers);
     resetForm();
     setView('dashboard');
   };
@@ -198,8 +319,10 @@ const PokerTracker = () => {
     setMentalGame('');
     setTags([]);
     setNotes('');
-    setReceiptPhoto(null);
+    setSessionImages([]);
     setEditingSession(null);
+    setShowLocationDropdown(false);
+    setShowStakesDropdown(false);
   };
 
   const editSession = (session) => {
@@ -222,157 +345,56 @@ const PokerTracker = () => {
     setMentalGame(session.mental_game || '');
     setTags(session.tags || []);
     setNotes(session.notes || '');
-    setReceiptPhoto(session.receipt_photo || null);
+    setSessionImages(session.images || []);
     setView('entry');
   };
 
-  const deleteSession = (sessionId) => {
-    if (!confirm('Delete this session?')) return;
-    const updatedUsers = { ...users };
-    updatedUsers[currentUser].sessions = updatedUsers[currentUser].sessions.filter(s => s.id !== sessionId);
-    setUsers(updatedUsers);
-  };
-
-  const toggleTag = (tag) => {
-    setTags(prev => 
-      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-    );
-  };
-
-  const handlePhotoCapture = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setReceiptPhoto(reader.result);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const removePhoto = () => {
-    setReceiptPhoto(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
   const getMetrics = (days = 30) => {
-    if (!currentUser || !users[currentUser]) return null;
-    
-    const sessions = users[currentUser].sessions;
+    if (!userData) return { totalProfit: 0, totalHours: 0, sessionCount: 0 };
+    const sessions = userData.sessions;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
-    
     const filtered = sessions.filter(s => new Date(s.date) >= cutoffDate);
-    
     const totalProfit = filtered.reduce((sum, s) => sum + (s.net_profit || 0), 0);
     const totalMinutes = filtered.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
-    const totalHours = totalMinutes / 60;
-    const avgHourly = totalHours > 0 ? totalProfit / totalHours : 0;
-    
-    return {
-      totalProfit,
-      totalHours: totalHours.toFixed(1),
-      avgHourly: avgHourly.toFixed(2),
-      sessionCount: filtered.length,
-      sessions: filtered
-    };
+    return { totalProfit, totalHours: (totalMinutes / 60).toFixed(1), sessionCount: filtered.length };
   };
 
   const getChartData = () => {
-    if (!currentUser || !users[currentUser]) return [];
-    
-    const sessions = [...users[currentUser].sessions].sort((a, b) => 
-      new Date(a.date) - new Date(b.date)
+    if (!userData) return [];
+    const sessions = [...userData.sessions].sort((a, b) => new Date(a.date) - new Date(b.date));
+    let cumulativeTotal = 0, cumulativeCash = 0, cumulativeTourney = 0;
+
+    return sessions.map(s => { 
+      const profit = (s.net_profit || 0);
+      cumulativeTotal += profit;
+      if (s.game_type === 'cash') cumulativeCash += profit;
+      else cumulativeTourney += profit;
+
+      return { 
+        date: s.date, 
+        Combined: cumulativeTotal,
+        Cash: cumulativeCash,
+        Tournament: cumulativeTourney
+      }; 
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-green-900 to-green-950 flex items-center justify-center">
+        <div className="text-white text-xl">Loading...</div>
+      </div>
     );
-    
-    let cumulative = 0;
-    return sessions.map(s => {
-      cumulative += s.net_profit || 0;
-      return {
-        date: s.date,
-        profit: cumulative
-      };
-    });
-  };
+  }
 
-  const exportData = () => {
-    const globalUsageCount = localStorage.getItem('pokerTracker_globalUsageCount') || '0';
-    
-    const exportPayload = {
-      ...users[currentUser],
-      appStats: {
-        totalAppUsage: parseInt(globalUsageCount),
-        exportDate: new Date().toISOString()
-      }
-    };
-    
-    const data = JSON.stringify(exportPayload, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `poker-tracker-${currentUser}-${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-  };
-
-  const getGlobalUsageStats = () => {
-    const globalUsageCount = parseInt(localStorage.getItem('pokerTracker_globalUsageCount') || '0');
-    const totalUsers = Object.keys(users).length;
-    return { globalUsageCount, totalUsers };
-  };
-
-  const getAllUserSessions = () => {
-    const allSessions = [];
-    Object.entries(users).forEach(([username, userData]) => {
-      userData.sessions.forEach(session => {
-        allSessions.push({
-          ...session,
-          username
-        });
-      });
-    });
-    return allSessions.sort((a, b) => new Date(b.date) - new Date(a.date));
-  };
-
-  // Username entry screen
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-green-900 to-green-950 flex items-center justify-center p-4">
         <div className="bg-gray-900 rounded-2xl p-8 max-w-md w-full shadow-2xl">
-          <div className="text-center mb-8">
-            <div className="text-6xl mb-4">🃏</div>
-            <h1 className="text-3xl font-bold text-white mb-2">Poker Tracker</h1>
-            <p className="text-gray-400">Track your sessions, improve your game</p>
-          </div>
-          
-          <div className="space-y-4">
-            <input
-              type="text"
-              placeholder="Enter your name"
-              className="w-full px-4 py-3 bg-gray-800 text-white rounded-lg border border-gray-700 focus:border-green-500 focus:outline-none"
-              onKeyPress={(e) => {
-                if (e.key === 'Enter' && e.target.value.trim()) {
-                  createUser(e.target.value.trim());
-                }
-              }}
-            />
-            
-            <button
-              onClick={(e) => {
-                const input = e.target.previousElementSibling;
-                if (input.value.trim()) createUser(input.value.trim());
-              }}
-              className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg transition"
-            >
-              Start Tracking
-            </button>
-          </div>
-          
-          <p className="text-center text-gray-500 text-sm mt-6">
-            All data stored on your device
-          </p>
+          <div className="text-center mb-8"><div className="text-6xl mb-4">🃏</div><h1 className="text-3xl font-bold text-white mb-2">Poker Tracker</h1></div>
+          <input type="text" placeholder="Enter your name" className="w-full px-4 py-3 bg-gray-800 text-white rounded-lg mb-4 focus:outline-none" onKeyPress={(e) => { if (e.key === 'Enter' && e.target.value.trim()) createUser(e.target.value.trim()); }} />
+          <button onClick={(e) => { const input = e.target.previousElementSibling; if (input.value.trim()) createUser(input.value.trim()); }} className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-lg">Start Tracking</button>
         </div>
       </div>
     );
@@ -380,630 +402,199 @@ const PokerTracker = () => {
 
   const metrics = getMetrics(30);
   const chartData = getChartData();
-  const usageStats = getGlobalUsageStats();
 
-  // Dashboard view
   if (view === 'dashboard') {
     return (
       <div className="min-h-screen bg-gray-950 text-white pb-20">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 sticky top-0 z-10 shadow-lg">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-xl font-bold">Poker Tracker</h1>
-              <p className="text-green-200 text-sm">{currentUser}</p>
-            </div>
-            <div className="flex gap-2">
-              <button 
-                onClick={exportData}
-                className="p-2 hover:bg-green-800 rounded-lg transition"
-                title="Export data"
-              >
-                <Download size={20} />
-              </button>
-            </div>
-          </div>
+        <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 sticky top-0 z-10 shadow-lg flex justify-between items-center">
+          <div><h1 className="text-xl font-bold">Poker Tracker</h1><p className="text-green-200 text-sm">{currentUser}</p></div>
         </div>
-
-        {/* Quick Add Button */}
+        
         <div className="p-4">
-          <button
-            onClick={() => {
-              resetForm();
-              setView('entry');
-            }}
-            className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg transition"
-          >
-            <Plus size={24} />
-            Log New Session
-          </button>
+          <button onClick={() => { resetForm(); setView('entry'); }} className="w-full bg-green-600 hover:bg-green-700 py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg transition transform active:scale-95"><Plus size={24} /> Log New Session</button>
         </div>
 
-        {/* Metrics Cards */}
-        <div className="px-4 pb-4">
-          <h2 className="text-gray-400 text-sm font-semibold mb-3">Last 30 Days</h2>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-              <div className="text-gray-400 text-xs mb-1">Profit</div>
-              <div className={`text-2xl font-bold ${metrics?.totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                ${metrics?.totalProfit.toFixed(0)}
-              </div>
-            </div>
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-              <div className="text-gray-400 text-xs mb-1">Hours</div>
-              <div className="text-2xl font-bold text-blue-400">{metrics?.totalHours}h</div>
-            </div>
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-              <div className="text-gray-400 text-xs mb-1">Hourly</div>
-              <div className={`text-2xl font-bold ${metrics?.avgHourly >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                ${metrics?.avgHourly}/hr
-              </div>
-            </div>
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-              <div className="text-gray-400 text-xs mb-1">Sessions</div>
-              <div className="text-2xl font-bold text-purple-400">{metrics?.sessionCount}</div>
-            </div>
-          </div>
+        <div className="px-4 pb-4 grid grid-cols-2 gap-3">
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800"><div className="text-gray-400 text-xs">30d Profit</div><div className={`text-2xl font-bold ${metrics.totalProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${metrics.totalProfit.toFixed(0)}</div></div>
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800"><div className="text-gray-400 text-xs">30d Hours</div><div className="text-2xl font-bold text-blue-400">{metrics.totalHours}h</div></div>
         </div>
 
-        {/* Chart */}
         {chartData.length > 0 && (
           <div className="px-4 pb-4">
-            <h2 className="text-gray-400 text-sm font-semibold mb-3">Cumulative Profit</h2>
-            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                  <XAxis 
-                    dataKey="date" 
-                    stroke="#9CA3AF"
-                    tick={{ fontSize: 10 }}
-                    tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  />
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="text-gray-400 text-sm font-semibold">Profit Performance</h2>
+              <div className="flex gap-2">
+                <button onClick={() => toggleLine('Combined')} className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Combined') ? 'bg-green-600 border-green-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}>Combined</button>
+                <button onClick={() => toggleLine('Cash')} className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Cash') ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}>Cash</button>
+                <button onClick={() => toggleLine('Tournament')} className={`text-[10px] px-2 py-1 rounded-full border transition ${visibleLines.includes('Tournament') ? 'bg-orange-600 border-orange-500 text-white' : 'bg-gray-900 border-gray-700 text-gray-500'}`}>Tourney</button>
+              </div>
+            </div>
+
+            <div className="bg-gray-900 rounded-xl p-4 border border-gray-800" style={{ height: '320px' }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+                  <XAxis dataKey="date" hide />
                   <YAxis stroke="#9CA3AF" tick={{ fontSize: 10 }} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151', borderRadius: '8px' }}
-                    labelStyle={{ color: '#9CA3AF' }}
-                  />
-                  <Line type="monotone" dataKey="profit" stroke="#10B981" strokeWidth={2} dot={false} />
+                  <Tooltip contentStyle={{ backgroundColor: '#111827', border: '1px solid #374151', borderRadius: '8px' }} itemStyle={{ fontSize: '12px' }} />
+                  {visibleLines.includes('Combined') && <Line type="monotone" name="Combined" dataKey="Combined" stroke="#10B981" strokeWidth={3} dot={false} />}
+                  {visibleLines.includes('Cash') && <Line type="monotone" name="Cash" dataKey="Cash" stroke="#3B82F6" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
+                  {visibleLines.includes('Tournament') && <Line type="monotone" name="Tournament" dataKey="Tournament" stroke="#F59E0B" strokeWidth={2} dot={false} strokeDasharray="5 5" />}
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
         )}
 
-        {/* Recent Sessions */}
         <div className="px-4">
           <h2 className="text-gray-400 text-sm font-semibold mb-3">Recent Sessions</h2>
           <div className="space-y-2">
-            {users[currentUser].sessions
-              .sort((a, b) => new Date(b.date) - new Date(a.date))
-              .slice(0, 10)
-              .map((session) => (
-                <div 
-                  key={session.id}
-                  onClick={() => editSession(session)}
-                  className="bg-gray-900 rounded-xl p-4 border border-gray-800 hover:border-gray-700 transition cursor-pointer"
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <div className="text-sm text-gray-400">{new Date(session.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
-                      <div className="font-semibold">{session.stakes} {session.game_type === 'tournament' ? 'MTT' : 'Cash'}</div>
-                      <div className="text-sm text-gray-400">{session.location}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className={`text-xl font-bold ${session.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {session.net_profit >= 0 ? '+' : ''}${session.net_profit.toFixed(0)}
-                      </div>
-                      <div className="text-sm text-gray-400">
-                        {(session.duration_minutes / 60).toFixed(1)}h
-                        {session.game_type === 'cash' && ` • $${session.hourly_rate.toFixed(0)}/hr`}
-                      </div>
-                    </div>
+            {userData?.sessions.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 10).map((session) => (
+              <div key={session.id} onClick={() => editSession(session)} className="bg-gray-900 rounded-xl p-4 border border-gray-800 cursor-pointer relative">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="text-xs text-gray-500">{new Date(session.date).toLocaleDateString()}</div>
+                    <div className="font-semibold">{session.game_type === 'tournament' ? 'MTT' : 'Cash'} - {session.stakes}</div>
+                    <div className="text-xs text-gray-400">{session.location}</div>
                   </div>
-                  {session.tags?.length > 0 && (
-                    <div className="flex gap-1 flex-wrap">
-                      {session.tags.map(tag => (
-                        <span key={tag} className="text-xs bg-gray-800 text-gray-300 px-2 py-1 rounded">
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-          </div>
-        </div>
-
-        {users[currentUser].sessions.length === 0 && (
-          <div className="text-center py-12 text-gray-500">
-            <p>No sessions yet</p>
-            <p className="text-sm">Tap "Log New Session" to get started</p>
-          </div>
-        )}
-
-        {/* Global Usage Counter - Bottom Right */}
-        <div className="fixed bottom-4 right-4 bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 shadow-lg">
-          <div className="text-xs text-gray-400">Total Uses</div>
-          <div className="text-lg font-bold text-green-400">{usageStats?.globalUsageCount}</div>
-        </div>
-
-        {/* Hidden Admin Button - Bottom Left */}
-        <div className="fixed bottom-4 left-4 relative">
-          <button
-            onClick={() => setShowUserDropdown(!showUserDropdown)}
-            className="w-12 h-12 bg-gray-900 border border-gray-800 rounded-lg shadow-lg hover:bg-gray-800 transition flex items-center justify-center"
-          >
-            <Settings size={20} className="text-gray-400" />
-          </button>
-
-          {/* Hidden User Dropdown */}
-          {showUserDropdown && (
-            <div className="absolute bottom-14 left-0 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl min-w-[200px] z-50">
-              <div className="p-2">
-                <div className="text-xs text-gray-400 px-2 py-1 font-semibold">All Users</div>
-                {Object.entries(users).map(([username, userData]) => (
-                  <button
-                    key={username}
-                    onClick={() => {
-                      setShowUserDropdown(false);
-                      setShowAllUsers(true);
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-gray-800 rounded text-sm text-white transition"
-                  >
-                    {username}
-                    <span className="text-gray-400 text-xs ml-2">({userData.sessions.length})</span>
-                  </button>
-                ))}
-                <div className="border-t border-gray-700 mt-1 pt-1">
-                  <button
-                    onClick={() => {
-                      setShowUserDropdown(false);
-                      setShowAllUsers(true);
-                    }}
-                    className="w-full text-left px-3 py-2 hover:bg-green-800 rounded text-sm text-green-400 font-semibold transition"
-                  >
-                    View All Sessions →
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* All Users Modal - Ctrl+Alt+U */}
-        {showAllUsers && (
-          <div 
-            className="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center p-4"
-            onClick={() => setShowAllUsers(false)}
-          >
-            <div 
-              className="bg-gray-900 rounded-xl max-w-4xl w-full max-h-[90vh] overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 flex justify-between items-center">
-                <div>
-                  <h2 className="text-xl font-bold text-white">All Users & Sessions</h2>
-                  <p className="text-green-200 text-sm">{Object.keys(users).length} users • {getAllUserSessions().length} total sessions</p>
-                </div>
-                <button 
-                  onClick={() => setShowAllUsers(false)}
-                  className="p-2 hover:bg-green-800 rounded-lg transition"
-                >
-                  <X size={24} />
-                </button>
-              </div>
-              
-              <div className="overflow-y-auto max-h-[calc(90vh-80px)] p-4">
-                {/* User Summary */}
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-gray-400 mb-3">Users</h3>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {Object.entries(users).map(([username, userData]) => (
-                      <div key={username} className="bg-gray-800 rounded-lg p-3 border border-gray-700">
-                        <div className="font-semibold text-white">{username}</div>
-                        <div className="text-sm text-gray-400">{userData.sessions.length} sessions</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* All Sessions List */}
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-400 mb-3">All Sessions (Recent First)</h3>
-                  <div className="space-y-2">
-                    {getAllUserSessions().map((session) => (
-                      <div 
-                        key={`${session.username}-${session.id}`}
-                        className="bg-gray-800 rounded-lg p-4 border border-gray-700"
-                      >
-                        <div className="flex justify-between items-start mb-2">
-                          <div>
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-xs bg-green-700 text-white px-2 py-1 rounded font-semibold">
-                                {session.username}
-                              </span>
-                              <span className="text-sm text-gray-400">
-                                {new Date(session.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                              </span>
-                            </div>
-                            <div className="font-semibold text-white">
-                              {session.stakes} {session.game_type === 'tournament' ? 'MTT' : 'Cash'}
-                            </div>
-                            <div className="text-sm text-gray-400">{session.location}</div>
-                          </div>
-                          <div className="text-right">
-                            <div className={`text-xl font-bold ${session.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                              {session.net_profit >= 0 ? '+' : ''}${session.net_profit.toFixed(0)}
-                            </div>
-                            <div className="text-sm text-gray-400">
-                              {(session.duration_minutes / 60).toFixed(1)}h
-                              {session.game_type === 'cash' && ` • ${session.hourly_rate.toFixed(0)}/hr`}
-                            </div>
-                          </div>
-                        </div>
-                        {session.tags?.length > 0 && (
-                          <div className="flex gap-1 flex-wrap">
-                            {session.tags.map(tag => (
-                              <span key={tag} className="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded">
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                  <div className="flex flex-col items-end">
+                    <div className={`text-lg font-bold ${session.net_profit >= 0 ? 'text-green-400' : 'text-red-400'}`}>${session.net_profit.toFixed(0)}</div>
+                    <button onClick={(e) => deleteSession(session.id, e)} className="p-1 text-gray-600 hover:text-red-500 transition"><Trash2 size={16} /></button>
                   </div>
                 </div>
               </div>
-            </div>
+            ))}
           </div>
-        )}
+        </div>
       </div>
     );
   }
 
-  // Entry form view
   if (view === 'entry') {
+    const filteredLocationSuggestions = locationSuggestions.filter(l => 
+      l.toLowerCase().includes(location.toLowerCase())
+    );
+    const filteredStakesSuggestions = stakeSuggestions.filter(s => 
+      s.toLowerCase().includes(stakes.toLowerCase())
+    );
+
     return (
       <div className="min-h-screen bg-gray-950 text-white pb-8">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 sticky top-0 z-10 shadow-lg">
-          <div className="flex items-center gap-3">
-            <button onClick={() => { resetForm(); setView('dashboard'); }} className="p-2 hover:bg-green-800 rounded-lg transition">
-              <ArrowLeft size={20} />
-            </button>
-            <h1 className="text-xl font-bold">{editingSession ? 'Edit Session' : 'Log Session'}</h1>
-          </div>
+        <div className="bg-gradient-to-r from-green-900 to-green-800 p-4 sticky top-0 z-10 flex items-center gap-3">
+          <button onClick={() => { resetForm(); setView('dashboard'); }}><ArrowLeft size={24} /></button>
+          <h1 className="text-xl font-bold">{editingSession ? 'Edit' : 'New'} Session</h1>
         </div>
 
         <div className="p-4 space-y-4">
-          {/* Game Type */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-300 mb-2">Game Type</label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setGameType('cash')}
-                className={`py-3 rounded-lg font-semibold transition ${
-                  gameType === 'cash' 
-                    ? 'bg-green-600 text-white' 
-                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                }`}
-              >
-                Cash Game
-              </button>
-              <button
-                onClick={() => setGameType('tournament')}
-                className={`py-3 rounded-lg font-semibold transition ${
-                  gameType === 'tournament' 
-                    ? 'bg-green-600 text-white' 
-                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                }`}
-              >
-                Tournament
-              </button>
-            </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => setGameType('cash')} className={`py-3 rounded-lg font-semibold ${gameType === 'cash' ? 'bg-green-600' : 'bg-gray-800 text-gray-400'}`}>Cash</button>
+            <button onClick={() => setGameType('tournament')} className={`py-3 rounded-lg font-semibold ${gameType === 'tournament' ? 'bg-green-600' : 'bg-gray-800 text-gray-400'}`}>MTT</button>
           </div>
 
-          {/* Date */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-300 mb-2">Date</label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-            />
-          </div>
-
-          {/* Time */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-semibold text-gray-300 mb-2">Start Time</label>
-              <input
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-gray-300 mb-2">End Time</label>
-              <input
-                type="time"
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-                className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-              />
-            </div>
-          </div>
-
-          {/* Location */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-300 mb-2">Location</label>
-            <input
-              type="text"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              list="locations"
-              placeholder="Bellagio, PokerStars, etc."
-              className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-            />
-            <datalist id="locations">
-              {users[currentUser].locations.map(loc => (
-                <option key={loc} value={loc} />
-              ))}
-            </datalist>
-          </div>
-
-          {/* Stakes */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-300 mb-2">Stakes</label>
-            <input
-              type="text"
-              value={stakes}
-              onChange={(e) => setStakes(e.target.value)}
-              placeholder={gameType === 'cash' ? '1/2, 2/5, 5/10' : '$150, $500, $1000'}
-              className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-            />
-          </div>
-
-          {/* Cash Game Fields */}
-          {gameType === 'cash' && (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">Buy-in ($)</label>
-                  <input
-                    type="number"
-                    value={buyIn}
-                    onChange={(e) => setBuyIn(e.target.value)}
-                    placeholder="200"
-                    className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">Cash-out ($)</label>
-                  <input
-                    type="number"
-                    value={cashOut}
-                    onChange={(e) => setCashOut(e.target.value)}
-                    placeholder="540"
-                    className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Tournament Fields */}
-          {gameType === 'tournament' && (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">Buy-in ($)</label>
-                  <input
-                    type="number"
-                    value={buyinAmount}
-                    onChange={(e) => setBuyinAmount(e.target.value)}
-                    placeholder="150"
-                    className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">Fee ($)</label>
-                  <input
-                    type="number"
-                    value={buyinFee}
-                    onChange={(e) => setBuyinFee(e.target.value)}
-                    placeholder="15"
-                    className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">Re-entries</label>
-                  <input
-                    type="number"
-                    value={reentries}
-                    onChange={(e) => setReentries(e.target.value)}
-                    placeholder="0"
-                    className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">Finish</label>
-                  <input
-                    type="number"
-                    value={finishPosition}
-                    onChange={(e) => setFinishPosition(e.target.value)}
-                    placeholder="12"
-                    className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">Field</label>
-                  <input
-                    type="number"
-                    value={fieldSize}
-                    onChange={(e) => setFieldSize(e.target.value)}
-                    placeholder="180"
-                    className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-gray-300 mb-2">Prize ($)</label>
-                <input
-                  type="number"
-                  value={prize}
-                  onChange={(e) => setPrize(e.target.value)}
-                  placeholder="0"
-                  className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none"
-                />
-              </div>
-
-              {/* Receipt Photo */}
-              <div>
-                <label className="block text-sm font-semibold text-gray-300 mb-2">Receipt Photo (Optional)</label>
-                {!receiptPhoto ? (
-                  <div>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={handlePhotoCapture}
-                      className="hidden"
-                      id="receipt-upload"
-                    />
-                    <label
-                      htmlFor="receipt-upload"
-                      className="flex items-center justify-center gap-2 w-full py-4 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border-2 border-dashed border-gray-700 cursor-pointer transition"
-                    >
-                      <Camera size={20} />
-                      Take Photo of Receipt
-                    </label>
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <img 
-                      src={receiptPhoto} 
-                      alt="Receipt preview" 
-                      className="w-full rounded-lg border border-gray-800"
-                    />
-                    <button
-                      onClick={removePhoto}
-                      className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white p-2 rounded-full shadow-lg transition"
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
-
-          {/* Optional Section */}
-          <div className="border-t border-gray-800 pt-4 mt-6">
-            <h3 className="text-gray-400 text-sm font-semibold mb-3">Optional Info</h3>
-            
-            {/* Table Quality */}
-            <div className="mb-4">
-              <label className="block text-sm font-semibold text-gray-300 mb-2">Table Quality</label>
-              <div className="flex gap-2">
-                {[1, 2, 3, 4, 5].map(rating => (
-                  <button
-                    key={rating}
-                    onClick={() => setTableQuality(rating)}
-                    className={`flex-1 py-2 rounded-lg transition ${
-                      tableQuality >= rating
-                        ? 'bg-yellow-600 text-white'
-                        : 'bg-gray-800 text-gray-500'
-                    }`}
-                  >
-                    ⭐
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Mental Game */}
-            <div className="mb-4">
-              <label className="block text-sm font-semibold text-gray-300 mb-2">How You Played</label>
-              <div className="grid grid-cols-3 gap-2">
-                {['A', 'B', 'C'].map(grade => (
-                  <button
-                    key={grade}
-                    onClick={() => setMentalGame(grade)}
-                    className={`py-3 rounded-lg font-bold transition ${
-                      mentalGame === grade
-                        ? 'bg-green-600 text-white'
-                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                    }`}
-                  >
-                    {grade} Game
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Tags */}
-            <div className="mb-4">
-              <label className="block text-sm font-semibold text-gray-300 mb-2">Tags</label>
-              <div className="flex gap-2 flex-wrap">
-                {users[currentUser].tags.map(tag => (
-                  <button
-                    key={tag}
-                    onClick={() => toggleTag(tag)}
-                    className={`px-3 py-2 rounded-lg text-sm transition ${
-                      tags.includes(tag)
-                        ? 'bg-green-600 text-white'
-                        : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                    }`}
-                  >
-                    {tag}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Notes */}
-            <div>
-              <label className="block text-sm font-semibold text-gray-300 mb-2">Notes</label>
-              <textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Table dynamics, key hands, mistakes, etc."
-                rows={4}
-                className="w-full px-4 py-3 bg-gray-900 text-white rounded-lg border border-gray-800 focus:border-green-500 focus:outline-none resize-none"
-              />
-            </div>
-          </div>
-
-          {/* Save Button */}
-          <button
-            onClick={saveSession}
-            className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl transition shadow-lg mt-6"
-          >
-            {editingSession ? 'Update Session' : 'Save Session'}
-          </button>
-
-          {/* Delete Button (only when editing) */}
-          {editingSession && (
-            <button
-              onClick={() => {
-                deleteSession(editingSession.id);
-                setView('dashboard');
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+          
+          {/* Location with dropdown */}
+          <div className="relative">
+            <input 
+              type="text" 
+              value={location} 
+              onChange={(e) => {
+                setLocation(e.target.value);
+                setShowLocationDropdown(true);
               }}
-              className="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl transition"
-            >
-              Delete Session
-            </button>
+              onFocus={() => setShowLocationDropdown(true)}
+              onBlur={() => setTimeout(() => setShowLocationDropdown(false), 200)}
+              placeholder="Location" 
+              className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" 
+            />
+            {showLocationDropdown && filteredLocationSuggestions.length > 0 && location && (
+              <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                {filteredLocationSuggestions.map((suggestion, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => {
+                      setLocation(suggestion);
+                      setShowLocationDropdown(false);
+                    }}
+                    className="px-4 py-2 hover:bg-gray-700 cursor-pointer text-sm"
+                  >
+                    {suggestion}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Stakes with dropdown */}
+          <div className="relative">
+            <input 
+              type="text" 
+              value={stakes} 
+              onChange={(e) => {
+                setStakes(e.target.value);
+                setShowStakesDropdown(true);
+              }}
+              onFocus={() => setShowStakesDropdown(true)}
+              onBlur={() => setTimeout(() => setShowStakesDropdown(false), 200)}
+              placeholder={gameType === 'cash' ? "Stakes (1/2)" : "Tournament Name"} 
+              className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" 
+            />
+            {showStakesDropdown && filteredStakesSuggestions.length > 0 && stakes && (
+              <div className="absolute z-20 w-full mt-1 bg-gray-800 border border-gray-700 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                {filteredStakesSuggestions.map((suggestion, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => {
+                      setStakes(suggestion);
+                      setShowStakesDropdown(false);
+                    }}
+                    className="px-4 py-2 hover:bg-gray-700 cursor-pointer text-sm"
+                  >
+                    {suggestion}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {gameType === 'cash' ? (
+            <div className="grid grid-cols-2 gap-3">
+              <input type="number" value={buyIn} onChange={(e) => setBuyIn(e.target.value)} placeholder="Buy-in $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+              <input type="number" value={cashOut} onChange={(e) => setCashOut(e.target.value)} placeholder="Cash-out $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <input type="number" value={buyinAmount} onChange={(e) => setBuyinAmount(e.target.value)} placeholder="Buy-in $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+                <input type="number" value={buyinFee} onChange={(e) => setBuyinFee(e.target.value)} placeholder="Fee $" className="px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+              </div>
+              <input type="number" value={prize} onChange={(e) => setPrize(e.target.value)} placeholder="Prize $" className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none" />
+            </div>
           )}
+
+          <div className="pt-2 border-t border-gray-800 mt-4">
+            <label className="block text-xs font-semibold text-gray-400 mb-2 pt-2">Photos ({sessionImages.length}/3)</label>
+            <div className="grid grid-cols-3 gap-2">
+              {sessionImages.map((img, idx) => (
+                <div key={idx} className="relative aspect-square">
+                  <img src={img} alt="Session" className="w-full h-full object-cover rounded-lg border border-gray-700" />
+                  <button onClick={() => removePhoto(idx)} className="absolute -top-1 -right-1 bg-red-600 p-1 rounded-full"><X size={12} /></button>
+                </div>
+              ))}
+              {sessionImages.length < 3 && (
+                <label className="aspect-square flex flex-col items-center justify-center bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg cursor-pointer">
+                  <Plus size={24} className="text-gray-500" />
+                  <input type="file" accept="image/*" capture="environment" onChange={handlePhotoCapture} className="hidden" />
+                </label>
+              )}
+            </div>
+          </div>
+
+          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes..." rows={3} className="w-full px-4 py-3 bg-gray-900 rounded-lg border border-gray-800 focus:outline-none resize-none" />
+
+          <button onClick={saveSession} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 rounded-xl shadow-lg transition active:scale-95">
+            {editingSession ? 'Update' : 'Save'} Session
+          </button>
         </div>
       </div>
     );
