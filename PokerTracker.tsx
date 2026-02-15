@@ -27,70 +27,58 @@ const initDB = () => {
 };
 
 const saveToIndexedDB = async (storeName, data) => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([storeName], 'readwrite');
-    const store = transaction.objectStore(storeName);
-    const request = store.put(data);
-    
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([storeName], 'readwrite');
+      const store = transaction.objectStore(storeName);
+      const request = store.put(data);
+      
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error('IndexedDB save error:', error);
+    throw error;
+  }
 };
 
 const getFromIndexedDB = async (storeName, key) => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([storeName], 'readonly');
-    const store = transaction.objectStore(storeName);
-    const request = store.get(key);
-    
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([storeName], 'readonly');
+      const store = transaction.objectStore(storeName);
+      const request = store.get(key);
+      
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error('IndexedDB get error:', error);
+    return null;
+  }
 };
 
 const getAllFromIndexedDB = async (storeName) => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction([storeName], 'readonly');
-    const store = transaction.objectStore(storeName);
-    const request = store.getAll();
-    
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-};
-
-// Migration function from localStorage to IndexedDB
-const migrateFromLocalStorage = async () => {
   try {
-    const localStorageUsers = localStorage.getItem('pokerTracker_users');
-    const localStorageCurrentUser = localStorage.getItem('pokerTracker_currentUser');
-    
-    if (localStorageUsers) {
-      const users = JSON.parse(localStorageUsers);
-      for (const [username, userData] of Object.entries(users)) {
-        await saveToIndexedDB('users', { username, ...userData });
-      }
-    }
-    
-    if (localStorageCurrentUser) {
-      await saveToIndexedDB('settings', { key: 'currentUser', value: localStorageCurrentUser });
-    }
-    
-    // Mark migration as complete
-    localStorage.setItem('pokerTracker_migrated', 'true');
-    
-    return true;
+    const db = await initDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([storeName], 'readonly');
+      const store = transaction.objectStore(storeName);
+      const request = store.getAll();
+      
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
   } catch (error) {
-    console.error('Migration error:', error);
-    return false;
+    console.error('IndexedDB getAll error:', error);
+    return [];
   }
 };
 
 // HELPER: Compresses images to prevent storage issues
-const compressImage = (base64Str, maxWidth = 800, maxHeight = 800) => {
+const compressImage = (base64Str, maxWidth = 600, maxHeight = 600, quality = 0.6) => {
   return new Promise((resolve) => {
     const img = new Image();
     img.src = base64Str;
@@ -115,7 +103,7 @@ const compressImage = (base64Str, maxWidth = 800, maxHeight = 800) => {
       canvas.height = height;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.7));
+      resolve(canvas.toDataURL('image/jpeg', quality));
     };
   });
 };
@@ -157,26 +145,24 @@ const PokerTracker = () => {
   const [fieldSize, setFieldSize] = useState('');
   const [prize, setPrize] = useState('');
 
-  // Initialize and migrate data
+  // Initialize - load from IndexedDB only
   useEffect(() => {
     const initialize = async () => {
       setLoading(true);
       
-      // Check if migration is needed
-      const migrated = localStorage.getItem('pokerTracker_migrated');
-      if (!migrated) {
-        await migrateFromLocalStorage();
-      }
-      
-      // Load current user
-      const currentUserData = await getFromIndexedDB('settings', 'currentUser');
-      if (currentUserData) {
-        setCurrentUser(currentUserData.value);
-        const user = await getFromIndexedDB('users', currentUserData.value);
-        if (user) {
-          setUserData(user);
-          updateSuggestions(user.sessions || []);
+      try {
+        // Load current user from IndexedDB
+        const currentUserData = await getFromIndexedDB('settings', 'currentUser');
+        if (currentUserData) {
+          setCurrentUser(currentUserData.value);
+          const user = await getFromIndexedDB('users', currentUserData.value);
+          if (user) {
+            setUserData(user);
+            updateSuggestions(user.sessions || []);
+          }
         }
+      } catch (error) {
+        console.error('Error loading data:', error);
       }
       
       setLoading(false);
@@ -194,18 +180,23 @@ const PokerTracker = () => {
   };
 
   const createUser = async (username) => {
-    const newUser = {
-      username,
-      createdAt: new Date().toISOString(),
-      sessions: [],
-      locations: [],
-      tags: ['tired', 'tilted', 'good_table', 'ran_hot', 'ran_cold', 'tough_table']
-    };
-    
-    await saveToIndexedDB('users', newUser);
-    await saveToIndexedDB('settings', { key: 'currentUser', value: username });
-    setCurrentUser(username);
-    setUserData(newUser);
+    try {
+      const newUser = {
+        username,
+        createdAt: new Date().toISOString(),
+        sessions: [],
+        locations: [],
+        tags: ['tired', 'tilted', 'good_table', 'ran_hot', 'ran_cold', 'tough_table']
+      };
+      
+      await saveToIndexedDB('users', newUser);
+      await saveToIndexedDB('settings', { key: 'currentUser', value: username });
+      setCurrentUser(username);
+      setUserData(newUser);
+    } catch (error) {
+      console.error('Error creating user:', error);
+      alert('Error creating user. Please try again.');
+    }
   };
 
   const calculateDuration = (start, end) => {
@@ -221,8 +212,13 @@ const PokerTracker = () => {
     if (file && sessionImages.length < 3) {
       const reader = new FileReader();
       reader.onloadend = async () => {
-        const compressed = await compressImage(reader.result);
-        setSessionImages(prev => [...prev, compressed]);
+        try {
+          const compressed = await compressImage(reader.result);
+          setSessionImages(prev => [...prev, compressed]);
+        } catch (error) {
+          console.error('Error compressing image:', error);
+          alert('Error processing image. Please try a smaller image.');
+        }
       };
       reader.readAsDataURL(file);
     }
@@ -241,63 +237,74 @@ const PokerTracker = () => {
   const deleteSession = async (id, e) => {
     if (e) e.stopPropagation();
     if (window.confirm('Are you sure you want to delete this session?')) {
-      const updatedSessions = userData.sessions.filter(s => s.id !== id);
-      const updatedUser = { ...userData, sessions: updatedSessions };
-      await saveToIndexedDB('users', updatedUser);
-      setUserData(updatedUser);
-      updateSuggestions(updatedSessions);
+      try {
+        const updatedSessions = userData.sessions.filter(s => s.id !== id);
+        const updatedUser = { ...userData, sessions: updatedSessions };
+        await saveToIndexedDB('users', updatedUser);
+        setUserData(updatedUser);
+        updateSuggestions(updatedSessions);
+      } catch (error) {
+        console.error('Error deleting session:', error);
+        alert('Error deleting session. Please try again.');
+      }
     }
   };
 
   const saveSession = async () => {
     if (!currentUser) return;
-    const durationMinutes = calculateDuration(startTime, endTime);
-    let netProfit = 0;
-
-    if (gameType === 'cash') {
-      netProfit = parseFloat(cashOut || 0) - parseFloat(buyIn || 0);
-    } else {
-      const perEntry = parseFloat(buyinAmount || 0) + parseFloat(buyinFee || 0);
-      const totalInvested = perEntry + (parseInt(reentries || 0) * perEntry);
-      netProfit = parseFloat(prize || 0) - totalInvested;
-    }
-
-    const session = {
-      id: editingSession?.id || `sess_${Date.now()}`,
-      game_type: gameType,
-      date,
-      start_time: startTime,
-      end_time: endTime,
-      location,
-      stakes,
-      buy_in: gameType === 'cash' ? parseFloat(buyIn || 0) : null,
-      cash_out: gameType === 'cash' ? parseFloat(cashOut || 0) : null,
-      buyin_amount: gameType === 'tournament' ? parseFloat(buyinAmount || 0) : null,
-      buyin_fee: gameType === 'tournament' ? parseFloat(buyinFee || 0) : null,
-      reentries: gameType === 'tournament' ? parseInt(reentries || 0) : null,
-      finish_position: gameType === 'tournament' ? parseInt(finishPosition || 0) : null,
-      field_size: gameType === 'tournament' ? parseInt(fieldSize || 0) : null,
-      prize: gameType === 'tournament' ? parseFloat(prize || 0) : null,
-      images: sessionImages,
-      duration_minutes: durationMinutes,
-      net_profit: netProfit,
-      table_quality: tableQuality,
-      mental_game: mentalGame,
-      tags,
-      notes
-    };
-
-    const updatedSessions = editingSession
-      ? userData.sessions.map(s => s.id === session.id ? session : s)
-      : [...userData.sessions, session];
     
-    const updatedUser = { ...userData, sessions: updatedSessions };
-    await saveToIndexedDB('users', updatedUser);
-    setUserData(updatedUser);
-    updateSuggestions(updatedSessions);
+    try {
+      const durationMinutes = calculateDuration(startTime, endTime);
+      let netProfit = 0;
 
-    resetForm();
-    setView('dashboard');
+      if (gameType === 'cash') {
+        netProfit = parseFloat(cashOut || 0) - parseFloat(buyIn || 0);
+      } else {
+        const perEntry = parseFloat(buyinAmount || 0) + parseFloat(buyinFee || 0);
+        const totalInvested = perEntry + (parseInt(reentries || 0) * perEntry);
+        netProfit = parseFloat(prize || 0) - totalInvested;
+      }
+
+      const session = {
+        id: editingSession?.id || `sess_${Date.now()}`,
+        game_type: gameType,
+        date,
+        start_time: startTime,
+        end_time: endTime,
+        location,
+        stakes,
+        buy_in: gameType === 'cash' ? parseFloat(buyIn || 0) : null,
+        cash_out: gameType === 'cash' ? parseFloat(cashOut || 0) : null,
+        buyin_amount: gameType === 'tournament' ? parseFloat(buyinAmount || 0) : null,
+        buyin_fee: gameType === 'tournament' ? parseFloat(buyinFee || 0) : null,
+        reentries: gameType === 'tournament' ? parseInt(reentries || 0) : null,
+        finish_position: gameType === 'tournament' ? parseInt(finishPosition || 0) : null,
+        field_size: gameType === 'tournament' ? parseInt(fieldSize || 0) : null,
+        prize: gameType === 'tournament' ? parseFloat(prize || 0) : null,
+        images: sessionImages,
+        duration_minutes: durationMinutes,
+        net_profit: netProfit,
+        table_quality: tableQuality,
+        mental_game: mentalGame,
+        tags,
+        notes
+      };
+
+      const updatedSessions = editingSession
+        ? userData.sessions.map(s => s.id === session.id ? session : s)
+        : [...userData.sessions, session];
+      
+      const updatedUser = { ...userData, sessions: updatedSessions };
+      await saveToIndexedDB('users', updatedUser);
+      setUserData(updatedUser);
+      updateSuggestions(updatedSessions);
+
+      resetForm();
+      setView('dashboard');
+    } catch (error) {
+      console.error('Error saving session:', error);
+      alert('Error saving session. Please try removing images or simplifying notes.');
+    }
   };
 
   const resetForm = () => {
